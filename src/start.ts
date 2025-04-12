@@ -23,14 +23,14 @@ async function main() {
     throw new Error("Lengths don't match");
 
   if (
-    faultyArray.filter((faulty) => faulty === true).length >
+    faultyArray.filter((faulty) => faulty).length >
     initialValues.length / 2
   )
     throw new Error("Too many faulty nodes");
 
   await launchNetwork(
     initialValues.length,
-    faultyArray.filter((el) => el === true).length,
+    faultyArray.filter((el) => el).length,
     initialValues,
     faultyArray
   );

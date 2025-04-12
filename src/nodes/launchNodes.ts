@@ -1,5 +1,5 @@
-import { Value } from "../types";
-import { node } from "./node";
+import {Value} from "../types";
+import {node} from "./node";
 
 export async function launchNodes(
   N: number, // total number of nodes in the network
@@ -9,7 +9,7 @@ export async function launchNodes(
 ) {
   if (initialValues.length !== faultyList.length || N !== initialValues.length)
     throw new Error("Arrays don't match");
-  if (faultyList.filter((el) => el === true).length !== F)
+  if (faultyList.filter((el) => el).length !== F)
     throw new Error("faultyList doesnt have F faulties");
 
   const promises = [];
@@ -38,7 +38,5 @@ export async function launchNodes(
     promises.push(newPromise);
   }
 
-  const servers = await Promise.all(promises);
-
-  return servers;
+  return await Promise.all(promises);
 }

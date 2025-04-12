@@ -1,5 +1,5 @@
-import { launchNodes } from "./nodes/launchNodes";
-import { Value } from "./types";
+import {launchNodes} from "./nodes/launchNodes";
+import {Value} from "./types";
 
 export async function launchNetwork(
   N: number,
@@ -7,8 +7,6 @@ export async function launchNetwork(
   initialValues: Value[],
   faultyList: boolean[]
 ) {
-  // launch all nodes
-  const nodes = await launchNodes(N, F, initialValues, faultyList);
 
-  return nodes;
+  return await launchNodes(N, F, initialValues, faultyList);
 }

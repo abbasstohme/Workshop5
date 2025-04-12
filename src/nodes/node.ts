@@ -1,50 +1,156 @@
 import bodyParser from "body-parser";
 import express from "express";
 import { BASE_NODE_PORT } from "../config";
-import { Value } from "../types";
+import { NodeState, Value } from "../types";
 
 export async function node(
-  nodeId: number, // the ID of the node
-  N: number, // total number of nodes in the network
-  F: number, // number of faulty nodes in the network
-  initialValue: Value, // initial value of the node
-  isFaulty: boolean, // true if the node is faulty, false otherwise
-  nodesAreReady: () => boolean, // used to know if all nodes are ready to receive requests
-  setNodeIsReady: (index: number) => void // this should be called when the node is started and ready to receive requests
+    nodeId: number,
+    N: number,
+    F: number,
+    initialValue: Value,
+    isFaulty: boolean,
+    nodesAreReady: () => boolean,
+    setNodeIsReady: (index: number) => void
 ) {
-  const node = express();
-  node.use(express.json());
-  node.use(bodyParser.json());
+  const app = express();
+  app.use(express.json());
+  app.use(bodyParser.json());
 
-  // TODO implement this
-  // this route allows retrieving the current status of the node
-  // node.get("/status", (req, res) => {});
+  let killed = false;
+  let decisionBroadcasted = false;
+  let state: NodeState = {
+    killed: false,
+    x: isFaulty ? null : initialValue,
+    decided: isFaulty ? null : false,
+    k: isFaulty ? null : 0,
+  };
 
-  // TODO implement this
-  // this route allows the node to receive messages from other nodes
-  // node.post("/message", (req, res) => {});
+  let receivedMessages: { x: Value; k: number; final?: boolean }[] = [];
 
-  // TODO implement this
-  // this route is used to start the consensus algorithm
-  // node.get("/start", async (req, res) => {});
+  async function sendMessage(toNode: number, message: { x: Value; k: number; final?: boolean }) {
+    if (killed || isFaulty) return;
+    try {
+      await fetch(`http://localhost:${BASE_NODE_PORT + toNode}/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(message),
+      });
+    } catch (error) {
+      console.error(`Node ${nodeId} failed to send to ${toNode}:`, error);
+    }
+  }
 
-  // TODO implement this
-  // this route is used to stop the consensus algorithm
-  // node.get("/stop", async (req, res) => {});
+  async function broadcastDecision() {
+    if (decisionBroadcasted || isFaulty) return;
+    decisionBroadcasted = true;
+    const message = { x: state.x!, k: state.k!, final: true };
+    receivedMessages.push(message);
+    for (let i = 0; i < N; i++) {
+      if (i !== nodeId) await sendMessage(i, message);
+    }
+  }
 
-  // TODO implement this
-  // get the current state of a node
-  // node.get("/getState", (req, res) => {});
+  async function broadcastMessage() {
+    if (isFaulty) return;
+    const message = { x: state.x!, k: state.k! };
+    receivedMessages.push(message);
+    for (let i = 0; i < N; i++) {
+      if (i !== nodeId) await sendMessage(i, message);
+    }
+  }
 
-  // start the server
-  const server = node.listen(BASE_NODE_PORT + nodeId, async () => {
-    console.log(
-      `Node ${nodeId} is listening on port ${BASE_NODE_PORT + nodeId}`
-    );
+  async function processRound() {
+    if (killed || state.decided || isFaulty) return;
 
-    // the node is ready
-    setNodeIsReady(nodeId);
+    const currentRound = state.k!;
+
+    const finalMessage = receivedMessages.find(m => m.final);
+    if (finalMessage) {
+      state.x = finalMessage.x;
+      state.decided = true;
+      await broadcastDecision();
+      return;
+    }
+
+    const roundMessages = receivedMessages.filter(m => m.k === currentRound);
+    const requiredMessages = N - F;
+
+    if (roundMessages.length < requiredMessages) return;
+
+    const count0 = roundMessages.filter(m => m.x === 0).length;
+    const count1 = roundMessages.filter(m => m.x === 1).length;
+    const majorityThreshold = Math.floor(requiredMessages / 2) + 1;
+
+    if (N > 2 * F) {
+      if (count0 >= majorityThreshold) {
+        state.x = 0;
+        state.decided = true;
+      } else if (count1 >= majorityThreshold) {
+        state.x = 1;
+        state.decided = true;
+      } else {
+        state.x = Math.random() < 0.5 ? 0 : 1;
+      }
+    } else {
+      state.x = Math.random() < 0.5 ? 0 : 1;
+      state.decided = false;
+    }
+
+    receivedMessages = receivedMessages.filter(m => m.k !== currentRound);
+
+    if (state.decided) {
+      await broadcastDecision();
+    } else {
+      state.k!++;
+      broadcastMessage();
+    }
+  }
+
+  function scheduleRound() {
+    if (state.decided || killed) return;
+    processRound().then(() => setTimeout(scheduleRound, 50));
+  }
+
+  app.get("/status", (req, res) => {
+    res.status(isFaulty ? 500 : 200).send(isFaulty ? "faulty" : "live");
   });
 
-  return server;
+  app.get("/getState", (req, res) => {
+    res.json(state);
+  });
+
+  // @ts-ignore
+  app.post("/message", async (req, res) => {
+    if (killed || isFaulty) return res.status(400).send("Node unavailable");
+    const { x, k, final } = req.body;
+    if (typeof x === 'number' && typeof k === 'number') {
+      // @ts-ignore
+      receivedMessages.push({ x, k, final });
+      await processRound();
+    }
+    res.status(200).send("Message processed");
+  });
+
+  // @ts-ignore
+  app.get("/start", async (req, res) => {
+    if (killed || isFaulty || !nodesAreReady()) return res.status(400).send("Can't start");
+    if (N === 1) {
+      state.decided = true;
+      return res.send("Decided immediately");
+    }
+    broadcastMessage();
+    scheduleRound();
+    res.send("Consensus initiated");
+  });
+
+  app.get("/stop", async (req, res) => {
+    killed = true;
+    state.killed = true;
+    res.send("Node halted");
+  });
+
+  return app.listen(BASE_NODE_PORT + nodeId, () => {
+    console.log(`Node ${nodeId} active on ${BASE_NODE_PORT + nodeId}`);
+    setNodeIsReady(nodeId);
+  });
 }
